@@ -15,6 +15,17 @@ app.use(express.json());
 app.use(cors());
 app.use(morgan('dev'));
 
+// Query count middleware
+app.use((req, res, next) => {
+  req._queryCount = 0;
+  res.on('finish', () => {
+    if (req._queryCount > 5) {
+      console.log(`[QUERY COUNT] ${req.method} ${req.path} → ${req._queryCount} queries`);
+    }
+  });
+  next();
+});
+
 // Public Routes
 app.get('/api/health', restaurantController.getHealth);
 app.post('/api/auth/register', authController.register);
