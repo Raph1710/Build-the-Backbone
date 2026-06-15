@@ -18,6 +18,15 @@ const sendConfirmation = async (orderId, userEmail) => {
     return true;
 };
 
+/**
+ * sendOrderConfirmation is the BullMQ worker-compatible version.
+ * Accepts a job data object { to, orderId, order }.
+ */
+const sendOrderConfirmation = async ({ to, orderId, order }) => {
+    return sendConfirmation(orderId, to);
+};
+
 module.exports = {
-    sendConfirmation
+    sendConfirmation,
+    sendOrderConfirmation
 };

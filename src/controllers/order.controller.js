@@ -1,5 +1,5 @@
 const db = require('../db');
-const emailService = require('../lib/emailService');
+const emailQueue = require('../queues/email.queue');
 
 /**
  * Get Order History for the authenticated user.
@@ -11,51 +11,38 @@ const emailService = require('../lib/emailService');
  */
 const getOrderHistory = async (req, res) => {
     const userId = req.user.id;
+    const page = parseInt(req.query.page) || 1;
+    const limit = 20;
+    const offset = (page - 1) * limit;
 
     console.log(`[Order Controller] Fetching history for User #${userId}`);
 
-    // Query 1: Get all orders for this user
-    const ordersResult = await db.query(
-        'SELECT * FROM orders WHERE user_id = $1 ORDER BY order_date DESC',
-        [userId]
+    // Single JOIN query replacing N+1 loop
+    const result = await db.query(
+        `SELECT
+            o.id, o.total, o.status, o.created_at,
+            json_agg(
+                json_build_object(
+                    'itemId', oi.menu_item_id,
+                    'quantity', oi.quantity,
+                    'unitPrice', oi.unit_price,
+                    'name', mi.name
+                )
+            ) AS items
+         FROM orders o
+         JOIN order_items oi ON oi.order_id = o.id
+         JOIN menu_items mi ON mi.id = oi.menu_item_id
+         WHERE o.user_id = $1
+         GROUP BY o.id
+         ORDER BY o.created_at DESC
+         LIMIT $2 OFFSET $3`,
+        [userId, limit, offset]
     );
-    const orders = ordersResult.rows;
-
-    // // Get full order details for each order (N+1 query pattern)
-    // For each order, we fetch the items, then for each item, the menu item details.
-    const fullOrders = [];
-    
-    for (const order of orders) {
-        // Query 1+N: Get items for this order
-        const itemsResult = await db.query(
-            'SELECT * FROM order_items WHERE order_id = $1',
-            [order.id]
-        );
-        const items = itemsResult.rows;
-        
-        const detailedItems = [];
-        for (const item of items) {
-            // Query 1+N+M: Get menu details for this item
-            const menuResult = await db.query(
-                'SELECT * FROM menu_items WHERE id = $1',
-                [item.menu_item_id]
-            );
-            detailedItems.push({
-                ...item,
-                menu_item: menuResult.rows[0]
-            });
-        }
-        
-        fullOrders.push({
-            ...order,
-            items: detailedItems
-        });
-    }
 
     res.json({
         user_id: userId,
-        total_orders: orders.length,
-        orders: fullOrders
+        total_orders: result.rowCount,
+        orders: result.rows
     });
 };
 
@@ -98,9 +85,13 @@ const createOrder = async (req, res) => {
             );
         }
 
-        // // Send confirmation email before responding
-        // [PLANTED PROBLEM]: This will block for 300-800ms
-        await emailService.sendConfirmation(orderId, req.user.email);
+        // Before: await emailService.sendConfirmation(orderId, req.user.email)
+        // After: enqueue async - request handler no longer waits for email
+        await emailQueue.add('send-confirmation', {
+            orderId,
+            userEmail: req.user.email,
+            orderData: { id: orderId, restaurant_id, items, total, delivery_fee }
+        });
 
         res.status(201).json({
             message: 'Order created successfully!',
